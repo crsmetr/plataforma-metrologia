@@ -10,6 +10,7 @@ import streamlit as st
 
 PLANILHA_NOME = "Plataforma_Metrologia_DB"
 LOGO_DIR = "assets_instituicao"
+SIMULADORES_IMPLEMENTADOS = {"tracador", "tracador_ajuste"}
 
 
 @st.cache_resource
@@ -110,6 +111,53 @@ def cadastrar_aluno(nome, usuario, senha):
     novo_id = len(registros) + 1
     ws.append_row([novo_id, nome.strip(), usuario.strip(), hash_senha(senha), "aluno"])
     return True, "Cadastro realizado com sucesso! Faça login."
+
+
+def possui_simulador_ativo(inst):
+    """Verifica se o instrumento esta ativo e possui codigo de simulador implementado."""
+    ativo = int(inst.get("ativo", 0)) == 1
+    tipo = str(inst.get("tipo_simulador", "")).strip().lower()
+    nome_low = str(inst.get("nome", "")).strip().lower()
+    return ativo and (tipo in SIMULADORES_IMPLEMENTADOS) and ("em breve" not in nome_low)
+
+
+def normalizar_instrumento_modulo(nome_hist, insts_validos):
+    """Mapeia registros antigos/variacoes do historico apenas para instrumentos com simulador ativo."""
+    nome_limpo = str(nome_hist).strip()
+    mapa_exato = {}
+    for inst in insts_validos:
+        cat = str(inst.get("categoria", "")).strip()
+        nom = str(inst.get("nome", "")).strip()
+        label_modulo = f"{cat} — {nom}"
+        mapa_exato[nom.lower()] = label_modulo
+        mapa_exato[label_modulo.lower()] = label_modulo
+
+    if nome_limpo.lower() in mapa_exato:
+        return mapa_exato[nome_limpo.lower()]
+
+    low = nome_limpo.lower()
+    eh_002 = "0,02" in low or "0.02" in low
+    eh_005 = "0,05" in low or "0.05" in low
+    eh_ajuste = "ajuste" in low
+
+    for inst in insts_validos:
+        cat = str(inst.get("categoria", "")).strip()
+        nom = str(inst.get("nome", "")).strip()
+        tipo = str(inst.get("tipo_simulador", "")).strip().lower()
+        res_str = str(inst.get("resolucao", "")).replace(".", ",")
+        nom_low = nom.lower()
+
+        if "traçador" in low or "tracador" in low or "resolução" in low or "resolucao" in low:
+            if "traçador" in cat.lower() or "tracador" in cat.lower():
+                inst_002 = ("0,02" in nom_low or "0.02" in nom_low or "0,02" in res_str)
+                inst_005 = ("0,05" in nom_low or "0.05" in nom_low or "0,05" in res_str)
+                inst_ajuste = (tipo == "tracador_ajuste" or "ajuste" in nom_low)
+
+                if eh_ajuste == inst_ajuste:
+                    if (eh_002 and inst_002) or (eh_005 and inst_005):
+                        return f"{cat} — {nom}"
+
+    return None
 
 
 def gerar_svg_tracador(medida, resolucao, zoom_lupa, pos_lupa, revelar=False):
@@ -360,6 +408,79 @@ else:
     if escolha == "⚙️ PAINEL DO ADMINISTRADOR":
         st.header("⚙️ Painel de Gerenciamento do Administrador")
 
+        with st.expander("📊 Filtrar por Aluno — Desempenho por Instrumento", expanded=True):
+            ws_u_hist = sh.worksheet("usuarios")
+            regs_usuarios = ws_u_hist.get_all_records()
+            alunos_lista = [r for r in regs_usuarios if str(r.get("perfil", "")).strip().lower() == "aluno"]
+
+            if not alunos_lista:
+                st.info("Nenhum aluno cadastrado ainda.")
+            else:
+                col_f1, col_f2 = st.columns([3.2, 0.8])
+                with col_f1:
+                    opcoes_alunos = {f"{r.get('nome')} ({r.get('usuario')})": r.get("id") for r in alunos_lista}
+                    aluno_sel_label = st.selectbox("Selecione o Aluno:", list(opcoes_alunos.keys()), key="filtro_aluno_admin")
+                with col_f2:
+                    st.markdown("<div style='height: 31px;'></div>", unsafe_allow_html=True)
+                    if st.button("🔄 Atualizar", use_container_width=True, key="btn_atualizar_filtro_aluno"):
+                        st.cache_data.clear()
+                        st.rerun()
+
+                aluno_sel_id = str(opcoes_alunos[aluno_sel_label]).strip()
+
+                # Considera apenas instrumentos registrados, ativos e com codigo de simulador implementado
+                insts_com_simulador = [i for i in todos_inst if possui_simulador_ativo(i)]
+
+                ws_hist = sh.worksheet("historico")
+                valores_hist = ws_hist.get_all_values()
+
+                if len(valores_hist) > 0 and str(valores_hist[0][1]).strip().lower() in ["usuario_id", "id_usuario", "aluno_id", "user_id"]:
+                    linhas_hist = valores_hist[1:]
+                else:
+                    linhas_hist = valores_hist
+
+                ordem_modulo = [f"{inst['categoria']} — {inst['nome']}" for inst in insts_com_simulador]
+                resumo_inst = {}
+
+                for row in linhas_hist:
+                    if len(row) >= 4 and str(row[1]).strip() == aluno_sel_id:
+                        nome_modulo = normalizar_instrumento_modulo(row[2], insts_com_simulador)
+                        if not nome_modulo:
+                            continue
+
+                        try:
+                            acertou_h = int(float(str(row[3]).strip()))
+                        except ValueError:
+                            acertou_h = 0
+
+                        if nome_modulo not in resumo_inst:
+                            resumo_inst[nome_modulo] = {"total": 0, "acertos": 0, "erros": 0}
+                        resumo_inst[nome_modulo]["total"] += 1
+                        if acertou_h == 1:
+                            resumo_inst[nome_modulo]["acertos"] += 1
+                        else:
+                            resumo_inst[nome_modulo]["erros"] += 1
+
+                if not resumo_inst:
+                    st.warning("Este aluno ainda não realizou nenhuma medição nos instrumentos com simulador ativo.")
+                else:
+                    tabela_resultado = []
+                    for nome_mod in ordem_modulo:
+                        if nome_mod in resumo_inst and resumo_inst[nome_mod]["total"] > 0:
+                            dados_h = resumo_inst[nome_mod]
+                            qtd = dados_h["total"]
+                            ac = dados_h["acertos"]
+                            er = dados_h["erros"]
+                            pct = (ac / qtd * 100) if qtd > 0 else 0.0
+                            tabela_resultado.append({
+                                "Instrumento": nome_mod,
+                                "Quantidade de medições": qtd,
+                                "Acertos": ac,
+                                "Erros": er,
+                                "Resultado do desempenho": f"{pct:.1f}%"
+                            })
+                    st.dataframe(tabela_resultado, use_container_width=True, hide_index=True)
+
         with st.expander("🔐 Segurança: Alterar Login e Senha do Administrador", expanded=True):
             with st.form("form_troca_cred_admin"):
                 novo_login_adm = st.text_input("Novo Usuário de Acesso (Login)", value=user.get("usuario", "admin"))
@@ -395,7 +516,7 @@ else:
                 if c_btn1.button("💾 Salvar Identidade Visual", use_container_width=True):
                     set_config("nome_instituicao", novo_nome_inst.strip())
                     if arquivo_logo is not None:
-                        ext = os.path.splitext(arquivo_logo.name).lower()
+                        ext = os.path.splitext(arquivo_logo.name)[1].lower()
                         caminho_destino = os.path.join(LOGO_DIR, f"logo_atual{ext}")
                         with open(caminho_destino, "wb") as f:
                             f.write(arquivo_logo.getbuffer())
@@ -451,6 +572,7 @@ else:
         inst_atual = lista_inst[idx_sel]
         inst_id = inst_atual.get("id", idx_sel + 1)
         inst_nome = inst_atual.get("nome", "Instrumento")
+        inst_nome_completo = f"{inst_atual.get('categoria', '')} — {inst_nome}"
         inst_res = 0.02 if ("0,02" in str(inst_atual) or "0.02" in str(inst_atual)) else 0.05
         inst_tipo = str(inst_atual.get("tipo_simulador", "tracador")).strip()
         inst_instr = inst_atual.get("instrucoes", "")
@@ -598,7 +720,7 @@ else:
 
                                 ws_h = sh.worksheet("historico")
                                 data_agora = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-                                ws_h.append_row([len(ws_h.get_all_values()), user["id"], inst_nome, acertou, data_agora])
+                                ws_h.append_row([len(ws_h.get_all_values()), user["id"], inst_nome_completo, acertou, data_agora])
 
                                 if acertou:
                                     st.session_state[chave_placar]["acertos"] += 1
@@ -658,7 +780,7 @@ else:
                 st.session_state[ch_atual] = 5.00
                 st.session_state[f"sl_aj_{inst_id}"] = 5.00
                 st.session_state[ch_rev] = False
-                st.session_state[ch_fim] = time.time() + (int(op_tempo.split()) * 60) if op_tempo != "Livre (Sem tempo)" else None
+                st.session_state[ch_fim] = time.time() + (int(op_tempo.split()[0]) * 60) if op_tempo != "Livre (Sem tempo)" else None
                 st.cache_data.clear()
                 st.rerun()
 
@@ -757,7 +879,7 @@ else:
                             alvo_val, pos_val = st.session_state[ch_alvo], st.session_state[ch_atual]
                             acertou = 1 if abs(pos_val - alvo_val) < 0.001 else 0
                             ws_h = sh.worksheet("historico")
-                            ws_h.append_row([len(ws_h.get_all_values()), user["id"], inst_nome, acertou, datetime.datetime.now().strftime("%d/%m/%Y %H:%M")])
+                            ws_h.append_row([len(ws_h.get_all_values()), user["id"], inst_nome_completo, acertou, datetime.datetime.now().strftime("%d/%m/%Y %H:%M")])
                             if acertou:
                                 st.session_state[ch_pl]["acertos"] += 1
                                 st.session_state[ch_fb] = ("ok", f"🎉 **EXATO!** Você ajustou em **{alvo_val:.2f} mm**!")
