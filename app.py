@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import os
 import random
+import uuid
 import gspread
 from google.oauth2.service_account import Credentials
 import streamlit as st
@@ -11,6 +12,10 @@ import streamlit as st
 PLANILHA_NOME = "Plataforma_Metrologia_DB"
 LOGO_DIR = "assets_instituicao"
 SIMULADORES_IMPLEMENTADOS = {"tracador", "tracador_ajuste"}
+
+
+def gerar_id_unico(prefixo=""):
+    return f"{prefixo}{uuid.uuid4().hex[:8]}"
 
 
 @st.cache_resource
@@ -54,10 +59,12 @@ def ler_configs_cache():
     sh = conectar_sheets()
     return {str(r.get("chave")): str(r.get("valor", "")) for r in sh.worksheet("configuracoes").get_all_records()}
 
+
 @st.cache_data(ttl=60)
 def ler_instrumentos_cache():
     sh = conectar_sheets()
     return [{str(k).strip().lower(): v for k, v in r.items()} for r in sh.worksheet("instrumentos").get_all_records()]
+
 
 def get_config(chave, padrao=""):
     return ler_configs_cache().get(chave, padrao)
@@ -108,7 +115,7 @@ def cadastrar_aluno(nome, usuario, senha):
     for r in registros:
         if str(r.get("usuario")).strip().lower() == usuario.strip().lower():
             return False, "Este nome de usuário já está em uso."
-    novo_id = len(registros) + 1
+    novo_id = gerar_id_unico("usr_")
     ws.append_row([novo_id, nome.strip(), usuario.strip(), hash_senha(senha), "aluno"])
     return True, "Cadastro realizado com sucesso! Faça login."
 
@@ -356,7 +363,6 @@ if st.session_state.usuario is None:
                 dados = autenticar(user_input, pass_input)
                 if dados:
                     st.session_state.usuario = {"id": dados[0], "nome": dados[1], "perfil": dados[2]}
-                    st.cache_data.clear()
                     st.rerun()
                 else:
                     st.error("Usuário ou senha incorretos.")
@@ -389,7 +395,6 @@ else:
 
         if st.button("Sair", use_container_width=True):
             st.session_state.usuario = None
-            st.cache_data.clear()
             st.rerun()
 
         st.divider()
@@ -548,7 +553,7 @@ else:
                 if st.form_submit_button("Salvar Instrumento na Plataforma"):
                     if nome_inst:
                         ws_i = sh.worksheet("instrumentos")
-                        novo_id = len(todos_inst) + 1
+                        novo_id = gerar_id_unico("inst_")
                         ws_i.append_row([novo_id, nome_inst, cat_inst, res_inst, tipo_sim, instr_texto, 1])
                         st.success(f"Instrumento '{nome_inst}' adicionado ao Google Sheets!")
                         st.cache_data.clear()
@@ -620,7 +625,6 @@ else:
                     st.session_state[chave_fim_tempo] = time.time() + (minutos * 60)
                 else:
                     st.session_state[chave_fim_tempo] = None
-                st.cache_data.clear()
                 st.rerun()
 
             tempo_esgotado = False
@@ -720,7 +724,7 @@ else:
 
                                 ws_h = sh.worksheet("historico")
                                 data_agora = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-                                ws_h.append_row([len(ws_h.get_all_values()), user["id"], inst_nome_completo, acertou, data_agora])
+                                ws_h.append_row([gerar_id_unico("reg_"), user["id"], inst_nome_completo, acertou, data_agora])
 
                                 if acertou:
                                     st.session_state[chave_placar]["acertos"] += 1
@@ -732,7 +736,6 @@ else:
                                 st.session_state[chave_medida] = sortear_nova()
                                 st.session_state[chave_rev] = False
                                 st.session_state[chave_bloq] = random.random() < 0.45
-                                st.cache_data.clear()
                                 st.rerun()
                             except ValueError:
                                 st.warning("Digite um número válido.")
@@ -744,7 +747,6 @@ else:
                     else:
                         if st.button("👁️ Ver Coincidência", use_container_width=True, key=f"btn_ver_{inst_id}"):
                             st.session_state[chave_rev] = True
-                            st.cache_data.clear()
                             st.rerun()
 
                     # Resultado da leitura anterior exibido logo abaixo dos botoes
@@ -781,7 +783,6 @@ else:
                 st.session_state[f"sl_aj_{inst_id}"] = 5.00
                 st.session_state[ch_rev] = False
                 st.session_state[ch_fim] = time.time() + (int(op_tempo.split()[0]) * 60) if op_tempo != "Livre (Sem tempo)" else None
-                st.cache_data.clear()
                 st.rerun()
 
             esgotado = False
@@ -879,7 +880,7 @@ else:
                             alvo_val, pos_val = st.session_state[ch_alvo], st.session_state[ch_atual]
                             acertou = 1 if abs(pos_val - alvo_val) < 0.001 else 0
                             ws_h = sh.worksheet("historico")
-                            ws_h.append_row([len(ws_h.get_all_values()), user["id"], inst_nome_completo, acertou, datetime.datetime.now().strftime("%d/%m/%Y %H:%M")])
+                            ws_h.append_row([gerar_id_unico("reg_"), user["id"], inst_nome_completo, acertou, datetime.datetime.now().strftime("%d/%m/%Y %H:%M")])
                             if acertou:
                                 st.session_state[ch_pl]["acertos"] += 1
                                 st.session_state[ch_fb] = ("ok", f"🎉 **EXATO!** Você ajustou em **{alvo_val:.2f} mm**!")
@@ -888,7 +889,6 @@ else:
                                 st.session_state[ch_fb] = ("err", f"❌ **ERROU!** Ficou em **{pos_val:.2f} mm** (pedido: **{alvo_val:.2f} mm**).")
                             st.session_state[ch_alvo] = sortear_alvo()
                             st.session_state[ch_rev] = False
-                            st.cache_data.clear()
                             st.rerun()
                     if st.session_state[ch_fb]:
                         tfb, mfb = st.session_state[ch_fb]
