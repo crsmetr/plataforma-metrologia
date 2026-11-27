@@ -892,7 +892,10 @@ else:
                             st.rerun()
                     if st.session_state[ch_fb]:
                         tfb, mfb = st.session_state[ch_fb]
-                        st.success(mfb) if tfb == "ok" else st.error(mfb)
+                        if tfb == "ok":
+                            st.success(mfb)
+                        else:
+                            st.error(mfb)
 
         else:
             st.warning("🚧 Este módulo já está registrado no menu da plataforma e pronto para receber o código do simulador.")
